@@ -14,6 +14,8 @@ const (
 	fileFlags    = os.O_RDWR | os.O_CREATE
 )
 
+const readerLimit = 10
+
 var ErrKeyMissing = errors.New("key not found")
 
 type recordPos struct {
@@ -28,6 +30,7 @@ type Database struct {
 
 	mu        sync.RWMutex
 	writeChan chan writeRequest
+	readChan  chan readRequest
 	wg        sync.WaitGroup
 }
 
@@ -37,12 +40,23 @@ type writeRequest struct {
 	resp  chan error
 }
 
+type readRequest struct {
+	key  string
+	resp chan readResult
+}
+
+type readResult struct {
+	value string
+	err   error
+}
+
 func Open(dir string) (*Database, error) {
 	db := &Database{
 		dir:       dir,
 		files:     []*os.File{},
 		records:   make(map[string]recordPos),
 		writeChan: make(chan writeRequest, 100),
+		readChan:  make(chan readRequest, 100),
 	}
 
 	matches, _ := filepath.Glob(filepath.Join(dir, baseFilename+"*"))
@@ -70,6 +84,11 @@ func Open(dir string) (*Database, error) {
 	db.wg.Add(1)
 	go db.writeHandler()
 
+	for i := 0; i < readerLimit; i++ {
+		db.wg.Add(1)
+		go db.readHandler()
+	}
+
 	return db, nil
 }
 
@@ -79,6 +98,36 @@ func (db *Database) writeHandler() {
 	for req := range db.writeChan {
 		err := db.writeToFile(req.key, req.value)
 		req.resp <- err
+	}
+}
+
+func (db *Database) readHandler() {
+	defer db.wg.Done()
+
+	for req := range db.readChan {
+		db.mu.RLock()
+		pos, ok := db.records[req.key]
+		db.mu.RUnlock()
+
+		if !ok {
+			req.resp <- readResult{"", ErrKeyMissing}
+			continue
+		}
+
+		f, err := os.Open(pos.file.Name())
+		if err != nil {
+			req.resp <- readResult{"", err}
+			continue
+		}
+
+		e, err := LoadEntry(f, pos.offset)
+		f.Close()
+		if err != nil {
+			req.resp <- readResult{"", err}
+			continue
+		}
+
+		req.resp <- readResult{e.value, nil}
 	}
 }
 
@@ -122,6 +171,7 @@ func (db *Database) restore(f *os.File) error {
 
 func (db *Database) Close() error {
 	close(db.writeChan)
+	close(db.readChan)
 	db.wg.Wait()
 
 	for _, f := range db.files {
@@ -139,18 +189,10 @@ func (db *Database) createNewFile() (*os.File, error) {
 }
 
 func (db *Database) Get(key string) (string, error) {
-	db.mu.RLock()
-	pos, ok := db.records[key]
-	db.mu.RUnlock()
-
-	if !ok {
-		return "", ErrKeyMissing
-	}
-	e, err := LoadEntry(pos.file, pos.offset)
-	if err != nil {
-		return "", err
-	}
-	return e.value, nil
+	resp := make(chan readResult)
+	db.readChan <- readRequest{key, resp}
+	result := <-resp
+	return result.value, result.err
 }
 
 func (db *Database) Put(key, value string) error {
