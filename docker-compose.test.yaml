@@ -10,6 +10,8 @@ services:
       - server2
       - server3
       - balancer
+    environment:
+      - INTEGRATION_TEST=1
 
   balancer:
     build: .
@@ -19,16 +21,25 @@ services:
 
   server1:
     build: .
+    command: server
+    environment:
+      - TEAM_NAME=server1
     networks:
       - servers
 
   server2:
     build: .
+    command: server
+    environment:
+      - TEAM_NAME=server2
     networks:
       - servers
 
   server3:
     build: .
+    command: server
+    environment:
+      - TEAM_NAME=server3
     networks:
       - servers
 

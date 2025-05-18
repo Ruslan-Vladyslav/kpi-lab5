@@ -60,17 +60,24 @@ func health(dst string) bool {
 }
 
 func updateHealthyServersOnce() {
-	var healthy []string
-	for _, s := range serversPool {
-		if health(s) {
-			healthy = append(healthy, s)
+	for attempts := 0; attempts < 10; attempts++ {
+		var healthy []string
+		for _, s := range serversPool {
+			if health(s) {
+				healthy = append(healthy, s)
+			}
 		}
+		if len(healthy) > 0 {
+			mu.Lock()
+			healthyServers = healthy
+			mu.Unlock()
+			log.Printf("Initial healthy servers: %v", healthy)
+			return
+		}
+		log.Printf("No healthy servers yet, retry %d/10", attempts+1)
+		time.Sleep(1 * time.Second)
 	}
-	mu.Lock()
-	healthyServers = healthy
-	mu.Unlock()
-
-	log.Printf("Initial healthy servers: %v", healthy)
+	log.Printf("No healthy servers found after retries, proceeding with empty pool")
 }
 
 // Проактивне оновлення списку здорових серверів

@@ -1,56 +1,65 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
-	"flag"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"time"
-
-	"github.com/roman-mazur/architecture-practice-4-template/httptools"
-	"github.com/roman-mazur/architecture-practice-4-template/signal"
 )
 
-var port = flag.Int("port", 8080, "server port")
-
-const confResponseDelaySec = "CONF_RESPONSE_DELAY_SEC"
-const confHealthFailure = "CONF_HEALTH_FAILURE"
-
 func main() {
-	h := new(http.ServeMux)
+	team := os.Getenv("TEAM_NAME")
+	if team == "" {
+		log.Fatal("TEAM_NAME must be set")
+	}
+	today := time.Now().Format("2006-01-02")
+	payload, _ := json.Marshal(map[string]string{"value": today})
+	resp, err := http.DefaultClient.Post(
+		fmt.Sprintf("http://db:8082/db/%s", team),
+		"application/json",
+		bytes.NewReader(payload),
+	)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		log.Fatalf("failed to seed DB: %v status=%d", err, resp.StatusCode)
+	}
 
-	h.HandleFunc("/health", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("content-type", "text/plain")
-		if failConfig := os.Getenv(confHealthFailure); failConfig == "true" {
-			rw.WriteHeader(http.StatusInternalServerError)
-			_, _ = rw.Write([]byte("FAILURE"))
-		} else {
-			rw.WriteHeader(http.StatusOK)
-			_, _ = rw.Write([]byte("OK"))
-		}
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
 	})
 
-	report := make(Report)
-
-	h.HandleFunc("/api/v1/some-data", func(rw http.ResponseWriter, r *http.Request) {
-		respDelayString := os.Getenv(confResponseDelaySec)
-		if delaySec, parseErr := strconv.Atoi(respDelayString); parseErr == nil && delaySec > 0 && delaySec < 300 {
-			time.Sleep(time.Duration(delaySec) * time.Second)
+	mux.HandleFunc("/api/v1/some-data", func(rw http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.NotFound(rw, r)
+			return
 		}
 
-		report.Process(r)
+		dbURL := fmt.Sprintf("http://db:8082/db/%s", key)
+		resp, err := http.DefaultClient.Get(dbURL)
+		if err != nil {
+			http.Error(rw, "db error", http.StatusServiceUnavailable)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			http.NotFound(rw, r)
+			return
+		}
+		var entry struct{ Key, Value string }
+		if err := json.NewDecoder(resp.Body).Decode(&entry); err != nil {
+			http.Error(rw, "bad db reply", http.StatusInternalServerError)
+			return
+		}
 
-		rw.Header().Set("content-type", "application/json")
-		rw.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(rw).Encode([]string{
-			"1", "2",
-		})
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode([]string{entry.Value})
 	})
 
-	h.Handle("/report", report)
-
-	server := httptools.CreateServer(*port, h)
-	server.Start()
-	signal.WaitForTerminationSignal()
+	log.Printf("Starting server on :8080")
+	log.Fatal(http.ListenAndServe(":8080", mux))
 }
