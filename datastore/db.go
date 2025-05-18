@@ -1,116 +1,131 @@
 package datastore
 
 import (
-	"bufio"
 	"errors"
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
-const outFileName = "current-data"
+const (
+	baseFilename = "current-data-"
+	maxSize      = 10 * 1024 * 1024
+	fileFlags    = os.O_RDWR | os.O_CREATE
+)
 
-var ErrNotFound = fmt.Errorf("record does not exist")
+var ErrKeyMissing = errors.New("key not found")
 
-type hashIndex map[string]int64
-
-type Db struct {
-	out       *os.File
-	outOffset int64
-
-	index hashIndex
+type recordPos struct {
+	file   *os.File
+	offset int64
 }
 
-func Open(dir string) (*Db, error) {
-	outputPath := filepath.Join(dir, outFileName)
-	f, err := os.OpenFile(outputPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
-	if err != nil {
-		return nil, err
+type Database struct {
+	dir     string
+	files   []*os.File
+	records map[string]recordPos
+}
+
+func Open(dir string) (*Database, error) {
+	db := &Database{
+		dir:     dir,
+		files:   []*os.File{},
+		records: make(map[string]recordPos),
 	}
-	db := &Db{
-		out:   f,
-		index: make(hashIndex),
+
+	matches, _ := filepath.Glob(filepath.Join(dir, baseFilename+"*"))
+	for _, path := range matches {
+		f, err := os.OpenFile(path, os.O_RDWR, 0o600)
+		if err != nil {
+			db.Close()
+			return nil, errors.New("failed to open: " + path)
+		}
+		db.files = append(db.files, f)
+		if err := db.restore(f); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
-	err = db.recover()
-	if err != nil && err != io.EOF {
-		return nil, err
+
+	if len(db.files) == 0 {
+		f, err := db.createNewFile()
+		if err != nil {
+			return nil, err
+		}
+		db.files = append(db.files, f)
 	}
 	return db, nil
 }
 
-func (db *Db) recover() error {
-	f, err := os.Open(db.out.Name())
+func (db *Database) restore(f *os.File) error {
+	var offset int64
+	for item := range Stream(f) {
+		db.records[item.key] = recordPos{f, offset}
+		offset += int64(len(item.key)+len(item.value) + 8)
+	}
+	return nil
+}
+
+func (db *Database) Close() error {
+	for _, f := range db.files {
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *Database) createNewFile() (*os.File, error) {
+	name := baseFilename + strconv.Itoa(len(db.files))
+	fullPath := filepath.Join(db.dir, name)
+	return os.OpenFile(fullPath, fileFlags, 0o600)
+}
+
+func (db *Database) Get(key string) (string, error) {
+	pos, ok := db.records[key]
+	if !ok {
+		return "", ErrKeyMissing
+	}
+	e, err := LoadEntry(pos.file, pos.offset)
+	if err != nil {
+		return "", err
+	}
+	return e.value, nil
+}
+
+func (db *Database) Put(key, value string) error {
+	latest := db.files[len(db.files)-1]
+	info, err := latest.Stat()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	in := bufio.NewReader(f)
-	for err == nil {
-		var (
-			record entry
-			n      int
-		)
-		n, err = record.DecodeFromReader(in)
-		if errors.Is(err, io.EOF) {
-			if n != 0 {
-				return fmt.Errorf("corrupted file")
-			}
-			break
+	offset := info.Size()
+	if offset >= maxSize {
+		latest, err = db.createNewFile()
+		if err != nil {
+			return err
 		}
-
-		db.index[record.key] = db.outOffset
-		db.outOffset += int64(n)
+		db.files = append(db.files, latest)
+		offset = 0
 	}
-	return err
+
+	data := Serialize(kvPair{key, value})
+	if _, err := latest.WriteAt(data, offset); err != nil {
+		return err
+	}
+	db.records[key] = recordPos{latest, offset}
+	return nil
 }
 
-func (db *Db) Close() error {
-	return db.out.Close()
-}
-
-func (db *Db) Get(key string) (string, error) {
-	position, ok := db.index[key]
-	if !ok {
-		return "", ErrNotFound
+func (db *Database) Size() (int64, error) {
+	var total int64
+	for _, f := range db.files {
+		stat, err := f.Stat()
+		if err != nil {
+			return 0, err
+		}
+		total += stat.Size()
 	}
-
-	file, err := os.Open(db.out.Name())
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	_, err = file.Seek(position, 0)
-	if err != nil {
-		return "", err
-	}
-
-	var record entry
-	if _, err = record.DecodeFromReader(bufio.NewReader(file)); err != nil {
-		return "", err
-	}
-	return record.value, nil
-}
-
-func (db *Db) Put(key, value string) error {
-	e := entry{
-		key:   key,
-		value: value,
-	}
-	n, err := db.out.Write(e.Encode())
-	if err == nil {
-		db.index[key] = db.outOffset
-		db.outOffset += int64(n)
-	}
-	return err
-}
-
-func (db *Db) Size() (int64, error) {
-	info, err := db.out.Stat()
-	if err != nil {
-		return 0, err
-	}
-	return info.Size(), nil
+	return total, nil
 }
