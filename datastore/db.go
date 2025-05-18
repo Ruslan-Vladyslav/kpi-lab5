@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 )
 
 const (
@@ -24,13 +25,24 @@ type Database struct {
 	dir     string
 	files   []*os.File
 	records map[string]recordPos
+
+	mu        sync.RWMutex
+	writeChan chan writeRequest
+	wg        sync.WaitGroup
+}
+
+type writeRequest struct {
+	key   string
+	value string
+	resp  chan error
 }
 
 func Open(dir string) (*Database, error) {
 	db := &Database{
-		dir:     dir,
-		files:   []*os.File{},
-		records: make(map[string]recordPos),
+		dir:       dir,
+		files:     []*os.File{},
+		records:   make(map[string]recordPos),
+		writeChan: make(chan writeRequest, 100),
 	}
 
 	matches, _ := filepath.Glob(filepath.Join(dir, baseFilename+"*"))
@@ -54,46 +66,23 @@ func Open(dir string) (*Database, error) {
 		}
 		db.files = append(db.files, f)
 	}
+
+	db.wg.Add(1)
+	go db.writeHandler()
+
 	return db, nil
 }
 
-func (db *Database) restore(f *os.File) error {
-	var offset int64
-	for item := range Stream(f) {
-		db.records[item.key] = recordPos{f, offset}
-		offset += int64(len(item.key)+len(item.value) + 8)
+func (db *Database) writeHandler() {
+	defer db.wg.Done()
+
+	for req := range db.writeChan {
+		err := db.writeToFile(req.key, req.value)
+		req.resp <- err
 	}
-	return nil
 }
 
-func (db *Database) Close() error {
-	for _, f := range db.files {
-		if err := f.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (db *Database) createNewFile() (*os.File, error) {
-	name := baseFilename + strconv.Itoa(len(db.files))
-	fullPath := filepath.Join(db.dir, name)
-	return os.OpenFile(fullPath, fileFlags, 0o600)
-}
-
-func (db *Database) Get(key string) (string, error) {
-	pos, ok := db.records[key]
-	if !ok {
-		return "", ErrKeyMissing
-	}
-	e, err := LoadEntry(pos.file, pos.offset)
-	if err != nil {
-		return "", err
-	}
-	return e.value, nil
-}
-
-func (db *Database) Put(key, value string) error {
+func (db *Database) writeToFile(key, value string) error {
 	latest := db.files[len(db.files)-1]
 	info, err := latest.Stat()
 	if err != nil {
@@ -114,8 +103,60 @@ func (db *Database) Put(key, value string) error {
 	if _, err := latest.WriteAt(data, offset); err != nil {
 		return err
 	}
+
+	db.mu.Lock()
 	db.records[key] = recordPos{latest, offset}
+	db.mu.Unlock()
+
 	return nil
+}
+
+func (db *Database) restore(f *os.File) error {
+	var offset int64
+	for item := range Stream(f) {
+		db.records[item.key] = recordPos{f, offset}
+		offset += int64(len(item.key) + len(item.value) + 8)
+	}
+	return nil
+}
+
+func (db *Database) Close() error {
+	close(db.writeChan)
+	db.wg.Wait()
+
+	for _, f := range db.files {
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (db *Database) createNewFile() (*os.File, error) {
+	name := baseFilename + strconv.Itoa(len(db.files))
+	fullPath := filepath.Join(db.dir, name)
+	return os.OpenFile(fullPath, fileFlags, 0o600)
+}
+
+func (db *Database) Get(key string) (string, error) {
+	db.mu.RLock()
+	pos, ok := db.records[key]
+	db.mu.RUnlock()
+
+	if !ok {
+		return "", ErrKeyMissing
+	}
+	e, err := LoadEntry(pos.file, pos.offset)
+	if err != nil {
+		return "", err
+	}
+	return e.value, nil
+}
+
+func (db *Database) Put(key, value string) error {
+	resp := make(chan error)
+	db.writeChan <- writeRequest{key, value, resp}
+	return <-resp
 }
 
 func (db *Database) Size() (int64, error) {
