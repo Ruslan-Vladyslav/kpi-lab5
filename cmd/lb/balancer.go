@@ -153,8 +153,8 @@ func main() {
 
 	timeout = time.Duration(*timeoutSec) * time.Second
 
+	time.Sleep(3 * time.Second)
 	updateHealthyServersOnce()
-
 	go updateHealthyServers()
 
 	frontend := httptools.CreateServer(*port, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
