@@ -1,0 +1,36 @@
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    networks:
+      - servers
+    depends_on:
+      - server1
+      - server2
+      - server3
+      - balancer
+
+  balancer:
+    build: .
+    entrypoint: ["/opt/practice-4/lb", "--trace=true"]
+    networks:
+      - servers
+
+  server1:
+    build: .
+    networks:
+      - servers
+
+  server2:
+    build: .
+    networks:
+      - servers
+
+  server3:
+    build: .
+    networks:
+      - servers
+
+networks:
+  servers:
