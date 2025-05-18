@@ -22,8 +22,13 @@ func main() {
 		"application/json",
 		bytes.NewReader(payload),
 	)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		log.Fatalf("failed to seed DB: %v status=%d", err, resp.StatusCode)
+	if err != nil {
+		log.Fatalf("failed to seed DB: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Fatalf("failed to seed DB: status=%d", resp.StatusCode)
 	}
 
 	mux := http.NewServeMux()
