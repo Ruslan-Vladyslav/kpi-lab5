@@ -1,45 +1,21 @@
 package datastore
 
 import (
-	"bufio"
 	"bytes"
 	"testing"
 )
 
-func TestEntry_Encode(t *testing.T) {
-	e := entry{"key", "value"}
-	e.Decode(e.Encode())
-	if e.key != "key" {
-		t.Error("incorrect key")
-	}
-	if e.value != "value" {
-		t.Error("incorrect value")
-	}
-}
-
-func TestReadValue(t *testing.T) {
-	var (
-		a, b entry
-	)
-	a = entry{"key", "test-value"}
-	originalBytes := a.Encode()
-
-	b.Decode(originalBytes)
-	t.Log("encode/decode", a, b)
-	if a != b {
-		t.Error("Encode/Decode mismatch")
-	}
-
-	b = entry{}
-	n, err := b.DecodeFromReader(bufio.NewReader(bytes.NewReader(originalBytes)))
+func TestSerializeDeserialize(t *testing.T) {
+	input := kvPair{"key", "value"}
+	data := Serialize(input)
+	result, err := LoadEntry(bytes.NewReader(data), 0)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	t.Log("encode/decodeFromReader", a, b)
-	if a != b {
-		t.Error("Encode/DecodeFromReader mismatch")
+	if result.key != input.key {
+		t.Errorf("expected key %q, got %q", input.key, result.key)
 	}
-	if n != len(originalBytes) {
-		t.Errorf("DecodeFromReader() read %d bytes, expected %d", n, len(originalBytes))
+	if result.value != input.value {
+		t.Errorf("expected value %q, got %q", input.value, result.value)
 	}
 }
