@@ -1,4 +1,5 @@
 version: '3.8'
+
 networks:
   servers:
 
@@ -17,7 +18,7 @@ services:
 
   balancer:
     build: .
-    command: lb
+    entrypoint: ["/opt/practice-4/lb", "--trace=true"]
     networks:
       - servers
     ports:
@@ -55,3 +56,17 @@ services:
       - servers
     ports:
       - "8083:8080"
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    networks:
+      - servers
+    depends_on:
+      - server1
+      - server2
+      - server3
+      - balancer
+    environment:
+      - INTEGRATION_TEST=1
