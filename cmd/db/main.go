@@ -28,6 +28,11 @@ func main() {
 
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
 	mux.HandleFunc("/db/", func(w http.ResponseWriter, r *http.Request) {
 		key := r.URL.Path[len("/db/"):]
 		switch r.Method {

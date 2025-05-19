@@ -1,4 +1,79 @@
+version: '3.8'
+
+networks:
+  servers:
+
 services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: db
+    networks:
+      - servers
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./data:/opt/practice-4/data
+    healthcheck:
+      test: ["CMD", "pgrep", "db"]
+      interval: 2s
+      retries: 5
+      start_period: 5s
+
+  balancer:
+    build: .
+    entrypoint: ["/opt/practice-4/lb", "--trace=true"]
+    networks:
+      - servers
+    ports:
+      - "8090:8090"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  server1:
+    build: .
+    command: server
+    environment:
+      - TEAM_NAME=server1
+      - DB_DIR=/opt/practice-4/data
+    networks:
+      - servers
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  server2:
+    build: .
+    command: server
+    environment:
+      - TEAM_NAME=server2
+      - DB_DIR=/opt/practice-4/data
+    networks:
+      - servers
+    ports:
+      - "8081:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  server3:
+    build: .
+    command: server
+    environment:
+      - TEAM_NAME=server3
+      - DB_DIR=/opt/practice-4/data
+    networks:
+      - servers
+    ports:
+      - "8083:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
   test:
     build:
       context: .
@@ -6,42 +81,11 @@ services:
     networks:
       - servers
     depends_on:
-      - server1
-      - server2
-      - server3
-      - balancer
-    environment:
-      - INTEGRATION_TEST=1
-
-  balancer:
-    build: .
-    entrypoint: ["/opt/practice-4/lb", "--trace=true"]
-    networks:
-      - servers
-
-  server1:
-    build: .
-    command: server
-    environment:
-      - TEAM_NAME=server1
-    networks:
-      - servers
-
-  server2:
-    build: .
-    command: server
-    environment:
-      - TEAM_NAME=server2
-    networks:
-      - servers
-
-  server3:
-    build: .
-    command: server
-    environment:
-      - TEAM_NAME=server3
-    networks:
-      - servers
-
-networks:
-  servers:
+      server1:
+        condition: service_started
+      server2:
+        condition: service_started
+      server3:
+        condition: service_started
+      balancer:
+        condition: service_started
